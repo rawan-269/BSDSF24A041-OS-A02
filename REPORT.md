@@ -1,3 +1,4 @@
+
 # Operating Systems - Programming Assignment 02
 ## Report
 
@@ -53,6 +54,56 @@ The file type uses more than one bit, so we first take out all the type bits usi
     if ((mode & S_IFMT) == S_IFDIR)   // it is a directory
 
 There are also easy macros which do the same work, like S_ISDIR(mode), S_ISLNK(mode), S_ISREG(mode). I used these in my code to set the first character ('d', 'l', '-', etc).
+
+---
+
+## Feature 3: ls-v1.2.0 - Column Display (Down Then Across)
+
+### Q1. Explain the general logic for printing items in a "down then across" columnar format. Why is a simple single loop through the list of filenames insufficient for this task?
+
+In "down then across" format, the files are filled from top to bottom in the first column, and when the column is full, they continue in the next column. This is how the default ls command shows files.
+
+My logic works in these steps:
+
+1. First, I read all the filenames into a dynamic array and also find the length of the longest filename.
+2. Then I find the terminal width using ioctl().
+3. Column width = longest name + 2 spaces.
+4. Number of columns = terminal width / column width.
+5. Number of rows = (total files + columns - 1) / columns. This formula rounds up the answer, so no file is left out.
+6. Then I use two loops. The outer loop goes through each row, and the inner loop goes through each column. For row r and column c, the index of the file is:
+
+        index = r + c * rows
+
+For example, if there are 10 files and 3 columns, then rows = 4, and the files are placed like this:
+
+    0   4   8
+    1   5   9
+    2   6
+    3   7
+
+So the first row prints files 0, 4 and 8.
+
+A simple single loop (0, 1, 2, 3 ...) is not enough because the terminal can only print line by line, from left to right and top to bottom. We cannot go back up to print in the previous column. If I use a single loop, the files will be printed in order across the line (0, 1, 2 in the first row), which is the horizontal format and not "down then across". So I have to calculate which file belongs in each position of the row, and that is why I need the total number of rows before I start printing.
+
+---
+
+### Q2. What is the purpose of the ioctl system call in this context? What would be the limitations of your program if you only used a fixed-width fallback (e.g., 80 columns) instead of detecting the terminal size?
+
+ioctl() is a system call that is used to send special requests to a device. Here I used it with the TIOCGWINSZ request on the standard output to ask the terminal for its current size. It fills a struct winsize, and the ws_col field tells me how many characters fit in one line of the terminal.
+
+    struct winsize w;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
+    int width = w.ws_col;
+
+I use this width to decide how many columns can fit on the screen. If ioctl() fails (for example when the output is sent to a file and not to a terminal), my program uses 80 as the default width.
+
+If I only used a fixed width of 80, there would be these problems:
+
+- If the terminal is wider than 80 (like a full screen window), a lot of space on the right will be empty, and the program will print more rows than needed. The output will not use the screen properly.
+- If the terminal is smaller than 80, the lines will be longer than the screen, so they will wrap to the next line and the columns will get mixed up and become hard to read.
+- When the user resizes the window, the output will not adjust to the new size.
+
+So detecting the real terminal size makes the output always fit the screen, just like the real ls command.
 
 **Special bits:**
 
