@@ -267,3 +267,40 @@ In my program, I wanted to show a file in green if anyone can execute it. So I c
 S_IXUSR | S_IXGRP | S_IXOTH makes a mask where all three execute bits are on. If any one of these bits is on in st_mode, the result is non-zero and the file is treated as executable.
 
 One important thing is that directories also have execute bits (for directories, x means permission to enter it). So in my get_color() function I check S_ISDIR() before checking the execute bits. Otherwise all directories would be shown in green instead of blue. I also check for symbolic links first using lstat() and S_ISLNK(), because a link should be shown in pink no matter what it points to.
+
+---
+
+## Feature 7: ls-v1.6.0 - Recursive Listing (-R)
+
+### Q1. In a recursive function, what is a "base case"? In the context of your recursive ls, what is the base case that stops the recursion from continuing forever?
+
+A recursive function is a function that calls itself. The base case is the condition where the function stops calling itself and simply returns. Without a base case, the function would keep calling itself forever, and the program would crash because the stack memory would run out (stack overflow).
+
+In my recursive ls, the do_ls() function lists a directory and then calls itself for every sub-directory inside it. The base case is when a directory has no sub-directories. In that case, the loop inside do_ls() does not find any entry where S_ISDIR() is true, so no recursive call is made, and the function returns to the previous call.
+
+Since every directory tree has a limited depth, eventually we reach the deepest folders, which have no sub-directories, and the recursion stops.
+
+I also added some checks so the recursion does not go into a loop:
+- I skip "." (the current directory) and ".." (the parent directory). If I went into ".", I would list the same directory again and again forever. If I went into "..", I would go back up and come down again, which also never ends.
+- I use lstat() instead of stat(). If there is a symbolic link pointing to a parent directory, stat() would follow it and treat it as a directory, which could create an infinite loop. With lstat(), the link is seen as a link (not a directory), so my program does not go inside it.
+
+---
+
+### Q2. Explain why it is essential to construct a full path (e.g., "parent_dir/subdir") before making a recursive call. What would happen if you simply called do_ls("subdir") from within the do_ls("parent_dir") function call?
+
+When a program uses a relative name like "subdir", the operating system looks for it in the current working directory of the process, which is the folder where I ran the program. My program never changes its working directory (it does not use chdir()). So the name returned by readdir() is only the name of the entry, not its location.
+
+For example, if I run ./bin/ls -R from my project folder, and src contains a folder called test:
+- the correct path is "./src/test"
+- but if I call do_ls("test"), the program will look for "test" in my project folder, not inside src.
+
+What would happen:
+- If no folder called "test" exists in the current directory, opendir() will fail and the program will print "Cannot open directory : test". The contents of the real sub-directory will never be shown.
+- If by chance a different folder with the same name exists in the current directory, the program will list the wrong folder, and the output will be incorrect.
+- The problem gets worse at deeper levels, because every level loses the path of its parent.
+
+So in my code, before every recursive call, I build the full path with:
+
+    snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+
+and then call do_ls(path, mode, recursive). This way every call knows the exact location of its directory. The same full path is also needed for lstat(), otherwise lstat() would fail or check the wrong file.
