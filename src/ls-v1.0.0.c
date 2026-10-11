@@ -1,12 +1,14 @@
 /*
-* Programming Assignment 02: lsv1.5.0
+* Programming Assignment 02: lsv1.6.0
 * Features: -l (long listing), column display (down then across),
-*           -x (horizontal display), alphabetical sort, colorized output
+*           -x (horizontal display), alphabetical sort, colorized output,
+*           -R (recursive listing)
 * Usage:
 *       $ ./bin/ls
 *       $ ./bin/ls -l
 *       $ ./bin/ls -x
-*       $ ./bin/ls /dev
+*       $ ./bin/ls -R
+*       $ ./bin/ls -lR /etc
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,7 +29,6 @@
 #define MODE_LONG       1
 #define MODE_HORIZONTAL 2
 
-// NEW: ANSI color codes
 #define COLOR_RESET   "\033[0m"
 #define COLOR_BLUE    "\033[0;34m"
 #define COLOR_GREEN   "\033[0;32m"
@@ -37,9 +38,9 @@
 
 extern int errno;
 
-void do_ls(const char *dir, int mode);
-void print_vertical(const char *dir, char **names, int count, int maxlen);    // CHANGED
-void print_horizontal(const char *dir, char **names, int count, int maxlen);  // CHANGED
+void do_ls(const char *dir, int mode, int recursive);   // CHANGED: recursive added
+void print_vertical(const char *dir, char **names, int count, int maxlen);
+void print_horizontal(const char *dir, char **names, int count, int maxlen);
 void print_long(const char *dir, char **names, int count);
 void get_user_name(uid_t uid, char buf[], int size);
 void get_group_name(gid_t gid, char buf[], int size);
@@ -47,48 +48,58 @@ void mode_to_string(mode_t mode, char str[]);
 int num_len(long n);
 int get_terminal_width(void);
 int compare_names(const void *a, const void *b);
-int ends_with(const char *name, const char *ext);              // NEW
-const char *get_color(const char *dir, const char *name);      // NEW
-void print_colored(const char *dir, const char *name);         // NEW
-void print_spaces(int n);                                      // NEW
+int ends_with(const char *name, const char *ext);
+const char *get_color(const char *dir, const char *name);
+void print_colored(const char *dir, const char *name);
+void print_spaces(int n);
 
 int main(int argc, char *argv[])
 {
     int opt;
     int mode = MODE_VERTICAL;
+    int recursive_flag = 0;     // NEW
 
-    while ((opt = getopt(argc, argv, "lx")) != -1)
+    while ((opt = getopt(argc, argv, "lxR")) != -1)   // NEW: "lxR"
     {
         if (opt == 'l')
             mode = MODE_LONG;
         else if (opt == 'x')
             mode = MODE_HORIZONTAL;
+        else if (opt == 'R')
+            recursive_flag = 1;
         else
         {
-            fprintf(stderr, "Usage: %s [-l] [-x] [directory...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [-l] [-x] [-R] [directory...]\n", argv[0]);
             exit(1);
         }
     }
 
     if (optind == argc)
     {
-        do_ls(".", mode);
+        do_ls(".", mode, recursive_flag);
     }
     else
     {
         for (int i = optind; i < argc; i++)
         {
-            printf("Directory listing of %s : \n", argv[i]);
-            do_ls(argv[i], mode);
+            // with -R, do_ls prints its own "dir:" header
+            if (!recursive_flag)
+                printf("Directory listing of %s : \n", argv[i]);
+            do_ls(argv[i], mode, recursive_flag);
             puts("");
         }
     }
     return 0;
 }
 
-void do_ls(const char *dir, int mode)
+void do_ls(const char *dir, int mode, int recursive)
 {
     struct dirent *entry;
+
+    // NEW: with -R, print the directory name first (like real ls -R)
+    if (recursive)
+        printf("%s:\n", dir);
+
     DIR *dp = opendir(dir);
     if (dp == NULL)
     {
@@ -144,9 +155,35 @@ void do_ls(const char *dir, int mode)
     if (mode == MODE_LONG)
         print_long(dir, names, count);
     else if (mode == MODE_HORIZONTAL)
-        print_horizontal(dir, names, count, maxlen);   // CHANGED: dir added
+        print_horizontal(dir, names, count, maxlen);
     else
-        print_vertical(dir, names, count, maxlen);     // CHANGED: dir added
+        print_vertical(dir, names, count, maxlen);
+
+    // NEW: go inside every sub-directory
+    if (recursive)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            // never go into "." or ".." (this would loop forever)
+            if (strcmp(names[i], ".") == 0 || strcmp(names[i], "..") == 0)
+                continue;
+
+            // build the full path: parent_dir/name
+            char path[1024];
+            snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
+
+            struct stat info;
+            if (lstat(path, &info) == -1)
+                continue;
+
+            // lstat does not follow links, so a link to a folder is skipped
+            if (S_ISDIR(info.st_mode))
+            {
+                printf("\n");
+                do_ls(path, mode, recursive);    // recursive call
+            }
+        }
+    }
 
     for (int i = 0; i < count; i++)
         free(names[i]);
@@ -160,7 +197,6 @@ int compare_names(const void *a, const void *b)
     return strcmp(name1, name2);
 }
 
-/* NEW: returns 1 if name ends with ext (like ".tar"), else 0 */
 int ends_with(const char *name, const char *ext)
 {
     int name_len = strlen(name);
@@ -170,7 +206,6 @@ int ends_with(const char *name, const char *ext)
     return strcmp(name + name_len - ext_len, ext) == 0;
 }
 
-/* NEW: decide the color of a file using lstat() */
 const char *get_color(const char *dir, const char *name)
 {
     char path[1024];
@@ -178,7 +213,7 @@ const char *get_color(const char *dir, const char *name)
 
     snprintf(path, sizeof(path), "%s/%s", dir, name);
     if (lstat(path, &info) == -1)
-        return "";      // could not read info: no color
+        return "";
 
     mode_t mode = info.st_mode;
 
@@ -193,16 +228,14 @@ const char *get_color(const char *dir, const char *name)
     if (mode & (S_IXUSR | S_IXGRP | S_IXOTH))
         return COLOR_GREEN;
 
-    return "";          // normal file: no color
+    return "";
 }
 
-/* NEW: print the name in its color, then reset the color */
 void print_colored(const char *dir, const char *name)
 {
     printf("%s%s%s", get_color(dir, name), name, COLOR_RESET);
 }
 
-/* NEW: print n spaces (used for padding) */
 void print_spaces(int n)
 {
     for (int i = 0; i < n; i++)
@@ -238,7 +271,6 @@ void print_vertical(const char *dir, char **names, int count, int maxlen)
             int i = r + c * rows;
             if (i >= count)
                 break;
-            // CHANGED: colored name + manual padding
             print_colored(dir, names[i]);
             print_spaces(col_width - strlen(names[i]));
         }
@@ -262,7 +294,6 @@ void print_horizontal(const char *dir, char **names, int count, int maxlen)
             printf("\n");
             pos = 0;
         }
-        // CHANGED: colored name + manual padding
         print_colored(dir, names[i]);
         print_spaces(col_width - strlen(names[i]));
         pos = pos + col_width;
@@ -328,7 +359,6 @@ void print_long(const char *dir, char **names, int count)
         else
             snprintf(timestr, sizeof(timestr), "%.12s", t + 4);
 
-        // CHANGED: name is printed separately in color
         printf("%s %*ld %-*s %-*s %*ld %s ",
                perms,
                w_links, (long)info.st_nlink,
