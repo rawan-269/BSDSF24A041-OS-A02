@@ -1,12 +1,12 @@
 /*
-* Programming Assignment 02: lsv1.4.0
+* Programming Assignment 02: lsv1.5.0
 * Features: -l (long listing), column display (down then across),
-*           -x (horizontal display), alphabetical sort
+*           -x (horizontal display), alphabetical sort, colorized output
 * Usage:
 *       $ ./bin/ls
 *       $ ./bin/ls -l
 *       $ ./bin/ls -x
-*       $ ./bin/ls -x /etc
+*       $ ./bin/ls /dev
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,18 +27,30 @@
 #define MODE_LONG       1
 #define MODE_HORIZONTAL 2
 
+// NEW: ANSI color codes
+#define COLOR_RESET   "\033[0m"
+#define COLOR_BLUE    "\033[0;34m"
+#define COLOR_GREEN   "\033[0;32m"
+#define COLOR_RED     "\033[0;31m"
+#define COLOR_PINK    "\033[0;35m"
+#define COLOR_REVERSE "\033[7m"
+
 extern int errno;
 
 void do_ls(const char *dir, int mode);
-void print_vertical(char **names, int count, int maxlen);
-void print_horizontal(char **names, int count, int maxlen);
+void print_vertical(const char *dir, char **names, int count, int maxlen);    // CHANGED
+void print_horizontal(const char *dir, char **names, int count, int maxlen);  // CHANGED
 void print_long(const char *dir, char **names, int count);
 void get_user_name(uid_t uid, char buf[], int size);
 void get_group_name(gid_t gid, char buf[], int size);
 void mode_to_string(mode_t mode, char str[]);
 int num_len(long n);
 int get_terminal_width(void);
-int compare_names(const void *a, const void *b);   // NEW
+int compare_names(const void *a, const void *b);
+int ends_with(const char *name, const char *ext);              // NEW
+const char *get_color(const char *dir, const char *name);      // NEW
+void print_colored(const char *dir, const char *name);         // NEW
+void print_spaces(int n);                                      // NEW
 
 int main(int argc, char *argv[])
 {
@@ -127,28 +139,74 @@ void do_ls(const char *dir, int mode)
     }
     closedir(dp);
 
-    // NEW: sort names alphabetically before displaying
     qsort(names, count, sizeof(char *), compare_names);
 
     if (mode == MODE_LONG)
         print_long(dir, names, count);
     else if (mode == MODE_HORIZONTAL)
-        print_horizontal(names, count, maxlen);
+        print_horizontal(dir, names, count, maxlen);   // CHANGED: dir added
     else
-        print_vertical(names, count, maxlen);
+        print_vertical(dir, names, count, maxlen);     // CHANGED: dir added
 
     for (int i = 0; i < count; i++)
         free(names[i]);
     free(names);
 }
 
-/* NEW: comparison function for qsort (alphabetical order) */
 int compare_names(const void *a, const void *b)
 {
-    // a and b point to elements of the array, and each element is a char *
     const char *name1 = *(const char **)a;
     const char *name2 = *(const char **)b;
     return strcmp(name1, name2);
+}
+
+/* NEW: returns 1 if name ends with ext (like ".tar"), else 0 */
+int ends_with(const char *name, const char *ext)
+{
+    int name_len = strlen(name);
+    int ext_len = strlen(ext);
+    if (name_len < ext_len)
+        return 0;
+    return strcmp(name + name_len - ext_len, ext) == 0;
+}
+
+/* NEW: decide the color of a file using lstat() */
+const char *get_color(const char *dir, const char *name)
+{
+    char path[1024];
+    struct stat info;
+
+    snprintf(path, sizeof(path), "%s/%s", dir, name);
+    if (lstat(path, &info) == -1)
+        return "";      // could not read info: no color
+
+    mode_t mode = info.st_mode;
+
+    if (S_ISLNK(mode))
+        return COLOR_PINK;
+    if (S_ISDIR(mode))
+        return COLOR_BLUE;
+    if (S_ISCHR(mode) || S_ISBLK(mode) || S_ISSOCK(mode) || S_ISFIFO(mode))
+        return COLOR_REVERSE;
+    if (ends_with(name, ".tar") || ends_with(name, ".gz") || ends_with(name, ".zip"))
+        return COLOR_RED;
+    if (mode & (S_IXUSR | S_IXGRP | S_IXOTH))
+        return COLOR_GREEN;
+
+    return "";          // normal file: no color
+}
+
+/* NEW: print the name in its color, then reset the color */
+void print_colored(const char *dir, const char *name)
+{
+    printf("%s%s%s", get_color(dir, name), name, COLOR_RESET);
+}
+
+/* NEW: print n spaces (used for padding) */
+void print_spaces(int n)
+{
+    for (int i = 0; i < n; i++)
+        putchar(' ');
 }
 
 int get_terminal_width(void)
@@ -159,7 +217,7 @@ int get_terminal_width(void)
     return w.ws_col;
 }
 
-void print_vertical(char **names, int count, int maxlen)
+void print_vertical(const char *dir, char **names, int count, int maxlen)
 {
     if (count == 0)
         return;
@@ -180,13 +238,15 @@ void print_vertical(char **names, int count, int maxlen)
             int i = r + c * rows;
             if (i >= count)
                 break;
-            printf("%-*s", col_width, names[i]);
+            // CHANGED: colored name + manual padding
+            print_colored(dir, names[i]);
+            print_spaces(col_width - strlen(names[i]));
         }
         printf("\n");
     }
 }
 
-void print_horizontal(char **names, int count, int maxlen)
+void print_horizontal(const char *dir, char **names, int count, int maxlen)
 {
     if (count == 0)
         return;
@@ -202,7 +262,9 @@ void print_horizontal(char **names, int count, int maxlen)
             printf("\n");
             pos = 0;
         }
-        printf("%-*s", col_width, names[i]);
+        // CHANGED: colored name + manual padding
+        print_colored(dir, names[i]);
+        print_spaces(col_width - strlen(names[i]));
         pos = pos + col_width;
     }
     printf("\n");
@@ -266,14 +328,15 @@ void print_long(const char *dir, char **names, int count)
         else
             snprintf(timestr, sizeof(timestr), "%.12s", t + 4);
 
-        printf("%s %*ld %-*s %-*s %*ld %s %s",
+        // CHANGED: name is printed separately in color
+        printf("%s %*ld %-*s %-*s %*ld %s ",
                perms,
                w_links, (long)info.st_nlink,
                w_user, user,
                w_group, group,
                w_size, (long)info.st_size,
-               timestr,
-               names[i]);
+               timestr);
+        print_colored(dir, names[i]);
 
         if (S_ISLNK(info.st_mode))
         {
