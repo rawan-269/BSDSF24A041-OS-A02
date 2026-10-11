@@ -1,10 +1,12 @@
 /*
-* Programming Assignment 02: lsv1.2.0
-* Features: -l (long listing), column display (down then across)
+* Programming Assignment 02: lsv1.3.0
+* Features: -l (long listing), column display (down then across),
+*           -x (horizontal display)
 * Usage:
 *       $ ./bin/ls
 *       $ ./bin/ls -l
-*       $ ./bin/ls /etc
+*       $ ./bin/ls -x
+*       $ ./bin/ls -x /etc
 */
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,60 +18,64 @@
 #include <pwd.h>
 #include <grp.h>
 #include <time.h>
-#include <sys/ioctl.h>   // NEW: ioctl() for terminal width
+#include <sys/ioctl.h>
 
 #define SIX_MONTHS (6L * 30 * 24 * 60 * 60)
-#define SPACING 2        // NEW: spaces between columns
+#define SPACING 2
+
+// NEW: display modes
+#define MODE_VERTICAL   0
+#define MODE_LONG       1
+#define MODE_HORIZONTAL 2
 
 extern int errno;
 
-void do_ls(const char *dir);
-void do_ls_long(const char *dir);
+void do_ls(const char *dir, int mode);
+void print_vertical(char **names, int count, int maxlen);
+void print_horizontal(char **names, int count, int maxlen);   // NEW
+void print_long(const char *dir, char **names, int count);    // CHANGED (was do_ls_long)
+void get_user_name(uid_t uid, char buf[], int size);          // NEW helper
+void get_group_name(gid_t gid, char buf[], int size);         // NEW helper
 void mode_to_string(mode_t mode, char str[]);
 int num_len(long n);
-int get_terminal_width(void);                           // NEW
-void print_vertical(char **names, int count, int maxlen); // NEW
+int get_terminal_width(void);
 
 int main(int argc, char *argv[])
 {
     int opt;
-    int long_flag = 0;
+    int mode = MODE_VERTICAL;    // default display mode
 
-    while ((opt = getopt(argc, argv, "l")) != -1)
+    while ((opt = getopt(argc, argv, "lx")) != -1)   // NEW: "lx"
     {
         if (opt == 'l')
-            long_flag = 1;
+            mode = MODE_LONG;
+        else if (opt == 'x')
+            mode = MODE_HORIZONTAL;
         else
         {
-            fprintf(stderr, "Usage: %s [-l] [directory...]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [-l] [-x] [directory...]\n", argv[0]);
             exit(1);
         }
     }
 
     if (optind == argc)
     {
-        if (long_flag)
-            do_ls_long(".");
-        else
-            do_ls(".");
+        do_ls(".", mode);
     }
     else
     {
         for (int i = optind; i < argc; i++)
         {
             printf("Directory listing of %s : \n", argv[i]);
-            if (long_flag)
-                do_ls_long(argv[i]);
-            else
-                do_ls(argv[i]);
+            do_ls(argv[i], mode);
             puts("");
         }
     }
     return 0;
 }
 
-/* NEW: read all names into an array, then print in columns */
-void do_ls(const char *dir)
+/* Read all names into an array, then call the right display function */
+void do_ls(const char *dir, int mode)
 {
     struct dirent *entry;
     DIR *dp = opendir(dir);
@@ -79,9 +85,9 @@ void do_ls(const char *dir)
         return;
     }
 
-    int capacity = 10;   // how many names the array can hold right now
-    int count = 0;       // how many names are actually stored
-    int maxlen = 0;      // length of the longest name
+    int capacity = 10;
+    int count = 0;
+    int maxlen = 0;
 
     char **names = malloc(capacity * sizeof(char *));
     if (names == NULL)
@@ -97,7 +103,6 @@ void do_ls(const char *dir)
         if (entry->d_name[0] == '.')
             continue;
 
-        // array is full: make it double size
         if (count == capacity)
         {
             capacity = capacity * 2;
@@ -110,7 +115,7 @@ void do_ls(const char *dir)
             names = temp;
         }
 
-        names[count] = strdup(entry->d_name);   // make a copy of the name
+        names[count] = strdup(entry->d_name);
         int len = strlen(entry->d_name);
         if (len > maxlen)
             maxlen = len;
@@ -123,15 +128,19 @@ void do_ls(const char *dir)
     }
     closedir(dp);
 
-    print_vertical(names, count, maxlen);
+    // NEW: choose display function based on mode
+    if (mode == MODE_LONG)
+        print_long(dir, names, count);
+    else if (mode == MODE_HORIZONTAL)
+        print_horizontal(names, count, maxlen);
+    else
+        print_vertical(names, count, maxlen);
 
-    // free memory
     for (int i = 0; i < count; i++)
         free(names[i]);
     free(names);
 }
 
-/* NEW: get terminal width using ioctl, or 80 if it fails */
 int get_terminal_width(void)
 {
     struct winsize w;
@@ -140,7 +149,7 @@ int get_terminal_width(void)
     return w.ws_col;
 }
 
-/* NEW: print names "down then across" */
+/* Default: "down then across" */
 void print_vertical(char **names, int count, int maxlen)
 {
     if (count == 0)
@@ -151,15 +160,15 @@ void print_vertical(char **names, int count, int maxlen)
 
     int cols = term_width / col_width;
     if (cols < 1)
-        cols = 1;     // at least one column, even for very long names
+        cols = 1;
 
-    int rows = (count + cols - 1) / cols;   // round up
+    int rows = (count + cols - 1) / cols;
 
     for (int r = 0; r < rows; r++)
     {
         for (int c = 0; c < cols; c++)
         {
-            int i = r + c * rows;    // index of file at row r, column c
+            int i = r + c * rows;
             if (i >= count)
                 break;
             printf("%-*s", col_width, names[i]);
@@ -168,30 +177,44 @@ void print_vertical(char **names, int count, int maxlen)
     }
 }
 
-/* Long listing: like ls -l (same as v1.1.0) */
-void do_ls_long(const char *dir)
+/* NEW: -x option, "across" (left to right, then next line) */
+void print_horizontal(char **names, int count, int maxlen)
 {
-    struct dirent *entry;
+    if (count == 0)
+        return;
+
+    int term_width = get_terminal_width();
+    int col_width = maxlen + SPACING;
+    int pos = 0;     // how much of the current line is used
+
+    for (int i = 0; i < count; i++)
+    {
+        // next name will not fit: go to a new line
+        if (pos + col_width > term_width && pos > 0)
+        {
+            printf("\n");
+            pos = 0;
+        }
+        printf("%-*s", col_width, names[i]);
+        pos = pos + col_width;
+    }
+    printf("\n");
+}
+
+/* CHANGED: -l option, now works on the names array */
+void print_long(const char *dir, char **names, int count)
+{
     struct stat info;
     char path[1024];
     char user[64], group[64];
 
-    DIR *dp = opendir(dir);
-    if (dp == NULL)
-    {
-        fprintf(stderr, "Cannot open directory : %s\n", dir);
-        return;
-    }
-
     int w_links = 0, w_user = 0, w_group = 0, w_size = 0;
     long total_blocks = 0;
 
-    while ((entry = readdir(dp)) != NULL)
+    /* PASS 1: find column widths and total */
+    for (int i = 0; i < count; i++)
     {
-        if (entry->d_name[0] == '.')
-            continue;
-
-        snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+        snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
         if (lstat(path, &info) == -1)
             continue;
 
@@ -200,19 +223,11 @@ void do_ls_long(const char *dir)
         int len = num_len(info.st_nlink);
         if (len > w_links) w_links = len;
 
-        struct passwd *pw = getpwuid(info.st_uid);
-        if (pw != NULL)
-            snprintf(user, sizeof(user), "%s", pw->pw_name);
-        else
-            snprintf(user, sizeof(user), "%d", info.st_uid);
+        get_user_name(info.st_uid, user, sizeof(user));
         len = strlen(user);
         if (len > w_user) w_user = len;
 
-        struct group *gr = getgrgid(info.st_gid);
-        if (gr != NULL)
-            snprintf(group, sizeof(group), "%s", gr->gr_name);
-        else
-            snprintf(group, sizeof(group), "%d", info.st_gid);
+        get_group_name(info.st_gid, group, sizeof(group));
         len = strlen(group);
         if (len > w_group) w_group = len;
 
@@ -222,14 +237,10 @@ void do_ls_long(const char *dir)
 
     printf("total %ld\n", total_blocks / 2);
 
-    rewinddir(dp);
-
-    while ((entry = readdir(dp)) != NULL)
+    /* PASS 2: print each file */
+    for (int i = 0; i < count; i++)
     {
-        if (entry->d_name[0] == '.')
-            continue;
-
-        snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
+        snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
         if (lstat(path, &info) == -1)
         {
             perror(path);
@@ -239,17 +250,8 @@ void do_ls_long(const char *dir)
         char perms[11];
         mode_to_string(info.st_mode, perms);
 
-        struct passwd *pw = getpwuid(info.st_uid);
-        if (pw != NULL)
-            snprintf(user, sizeof(user), "%s", pw->pw_name);
-        else
-            snprintf(user, sizeof(user), "%d", info.st_uid);
-
-        struct group *gr = getgrgid(info.st_gid);
-        if (gr != NULL)
-            snprintf(group, sizeof(group), "%s", gr->gr_name);
-        else
-            snprintf(group, sizeof(group), "%d", info.st_gid);
+        get_user_name(info.st_uid, user, sizeof(user));
+        get_group_name(info.st_gid, group, sizeof(group));
 
         char *t = ctime(&info.st_mtime);
         char timestr[20];
@@ -267,7 +269,7 @@ void do_ls_long(const char *dir)
                w_group, group,
                w_size, (long)info.st_size,
                timestr,
-               entry->d_name);
+               names[i]);
 
         if (S_ISLNK(info.st_mode))
         {
@@ -281,8 +283,26 @@ void do_ls_long(const char *dir)
         }
         printf("\n");
     }
+}
 
-    closedir(dp);
+/* NEW helper: user id -> user name (or number if not found) */
+void get_user_name(uid_t uid, char buf[], int size)
+{
+    struct passwd *pw = getpwuid(uid);
+    if (pw != NULL)
+        snprintf(buf, size, "%s", pw->pw_name);
+    else
+        snprintf(buf, size, "%d", uid);
+}
+
+/* NEW helper: group id -> group name (or number if not found) */
+void get_group_name(gid_t gid, char buf[], int size)
+{
+    struct group *gr = getgrgid(gid);
+    if (gr != NULL)
+        snprintf(buf, size, "%s", gr->gr_name);
+    else
+        snprintf(buf, size, "%d", gid);
 }
 
 void mode_to_string(mode_t mode, char str[])
