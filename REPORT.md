@@ -164,3 +164,50 @@ Then I pass this mode to the do_ls() function. do_ls() first reads all the filen
         print_vertical(names, count, maxlen);
 
 So reading the directory happens in one place, and only the printing part changes based on the mode. Every display mode has its own separate function. This makes the code easy to extend, because to add a new mode I only need a new constant, a new case in getopt, and a new print function. It also means that when I add sorting later, I only have to sort the array once in do_ls() and all three modes will show sorted output.
+
+---
+
+## Feature 5: ls-v1.4.0 - Alphabetical Sort
+
+### Q1. Why is it necessary to read all directory entries into memory before you can sort them? What are the potential drawbacks of this approach for directories containing millions of files?
+
+readdir() gives the directory entries one by one, and in the order they are stored on the disk, which is not alphabetical. To sort something, we have to compare every item with the other items. For example, the last entry returned by readdir() could be the one that should come first alphabetically. So I cannot print the first name until I have seen all the names. That is why I first read all the names into a dynamic array, then sort the array with qsort(), and only then print it.
+
+Drawbacks for directories with millions of files:
+
+- **High memory usage:** Every filename is copied with strdup() and stored in memory, along with an array of pointers. With millions of files, this can take hundreds of MBs of RAM. On a system with low memory, the program may become very slow or malloc/realloc may fail.
+- **Delay before output:** Nothing is printed until all the entries are read and sorted. So for a very large directory, the user will see nothing on the screen for a long time.
+- **Sorting time:** qsort() takes about O(n log n) time, so for millions of files the sorting itself takes noticeable time.
+- **realloc cost:** As the array grows, realloc() may need to copy the whole array to a new bigger block of memory many times.
+
+---
+
+### Q2. Explain the purpose and signature of the comparison function required by qsort(). How does it work, and why must it take const void * arguments?
+
+qsort() is a general sorting function. It can sort any kind of array (integers, strings, structures), so it does not know how to compare our data. The comparison function tells qsort() how to decide the order of two elements.
+
+The signature must be:
+
+    int compare(const void *a, const void *b);
+
+It must return:
+- a negative number if a should come before b,
+- 0 if they are equal,
+- a positive number if a should come after b.
+
+My comparison function:
+
+    int compare_names(const void *a, const void *b)
+    {
+        const char *name1 = *(const char **)a;
+        const char *name2 = *(const char **)b;
+        return strcmp(name1, name2);
+    }
+
+How it works: qsort() passes the addresses of two elements of my array. My array is an array of char * (each element is a pointer to a string). So the address of an element is a char **. First I cast the void pointer to const char **, then I use * to get the actual string pointer. Then I compare the two strings with strcmp(), which already returns negative, zero or positive, so I return its result directly.
+
+Why const void *:
+- **void *** is used because qsort() must work with any data type. A void pointer can hold the address of any type, so the same qsort() can be used for ints, strings or structs. Inside our function we cast it to the correct type.
+- **const** is used because the comparison function should only read the values and must not change them. It is a promise that comparing will not modify the array.
+
+Note: strcmp() compares by ASCII values, so uppercase letters (A-Z) come before lowercase letters (a-z). That is why "Makefile" comes before "bin" in my output.
