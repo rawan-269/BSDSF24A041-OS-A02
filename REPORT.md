@@ -211,3 +211,59 @@ Why const void *:
 - **const** is used because the comparison function should only read the values and must not change them. It is a promise that comparing will not modify the array.
 
 Note: strcmp() compares by ASCII values, so uppercase letters (A-Z) come before lowercase letters (a-z). That is why "Makefile" comes before "bin" in my output.
+
+---
+
+## Feature 6: ls-v1.5.0 - Colorized Output
+
+### Q1. How do ANSI escape codes work to produce color in a standard Linux terminal? Show the specific code sequence for printing text in green.
+
+ANSI escape codes are special sequences of characters that the terminal does not print on the screen. Instead, the terminal understands them as commands, like "change the text color" or "reset the style".
+
+Every escape code starts with the ESC character, which is written in C as \033 (33 in octal = 27 in decimal). After ESC comes a [ , then some numbers separated by ; , and it ends with the letter m.
+
+    \033[<style>;<color>m
+
+- \033 is the ESC character
+- [ starts the command
+- 0 means normal style (1 would be bold)
+- 32 is the code for green (34 is blue, 31 is red, 35 is magenta/pink)
+- m means "apply this color/style"
+
+After printing the colored text, we must print the reset code \033[0m. If we do not reset, all the text after it will also stay in the same color.
+
+The code for printing text in green:
+
+    printf("\033[0;32mHello\033[0m\n");
+
+In my program I made macros for these codes, like:
+
+    #define COLOR_GREEN "\033[0;32m"
+    #define COLOR_RESET "\033[0m"
+
+One problem I faced is that these escape characters are counted by printf when padding with %-*s, even though they are invisible on screen. This made my columns misaligned. So I printed the colored name first and then added the padding spaces myself using col_width - strlen(name).
+
+---
+
+### Q2. To color an executable file, you need to check its permission bits. Explain which bits in the st_mode field you need to check to determine if a file is executable by the owner, group, or others.
+
+The st_mode field has three execute bits, one for each type of user:
+
+- **S_IXUSR** - execute permission for the owner (user)
+- **S_IXGRP** - execute permission for the group
+- **S_IXOTH** - execute permission for others
+
+To check one bit, I use the bitwise AND operator. For example:
+
+    if (mode & S_IXUSR)    // owner can execute
+
+If the result is non-zero, the bit is set.
+
+In my program, I wanted to show a file in green if anyone can execute it. So I combined all three bits using bitwise OR (|) and then checked them with AND:
+
+    if (mode & (S_IXUSR | S_IXGRP | S_IXOTH))
+        return COLOR_GREEN;
+
+S_IXUSR | S_IXGRP | S_IXOTH makes a mask where all three execute bits are on. If any one of these bits is on in st_mode, the result is non-zero and the file is treated as executable.
+
+One important thing is that directories also have execute bits (for directories, x means permission to enter it). So in my get_color() function I check S_ISDIR() before checking the execute bits. Otherwise all directories would be shown in green instead of blue. I also check for symbolic links first using lstat() and S_ISLNK(), because a link should be shown in pink no matter what it points to.
