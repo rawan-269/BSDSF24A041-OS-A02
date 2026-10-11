@@ -1,7 +1,7 @@
 /*
-* Programming Assignment 02: lsv1.3.0
+* Programming Assignment 02: lsv1.4.0
 * Features: -l (long listing), column display (down then across),
-*           -x (horizontal display)
+*           -x (horizontal display), alphabetical sort
 * Usage:
 *       $ ./bin/ls
 *       $ ./bin/ls -l
@@ -23,7 +23,6 @@
 #define SIX_MONTHS (6L * 30 * 24 * 60 * 60)
 #define SPACING 2
 
-// NEW: display modes
 #define MODE_VERTICAL   0
 #define MODE_LONG       1
 #define MODE_HORIZONTAL 2
@@ -32,20 +31,21 @@ extern int errno;
 
 void do_ls(const char *dir, int mode);
 void print_vertical(char **names, int count, int maxlen);
-void print_horizontal(char **names, int count, int maxlen);   // NEW
-void print_long(const char *dir, char **names, int count);    // CHANGED (was do_ls_long)
-void get_user_name(uid_t uid, char buf[], int size);          // NEW helper
-void get_group_name(gid_t gid, char buf[], int size);         // NEW helper
+void print_horizontal(char **names, int count, int maxlen);
+void print_long(const char *dir, char **names, int count);
+void get_user_name(uid_t uid, char buf[], int size);
+void get_group_name(gid_t gid, char buf[], int size);
 void mode_to_string(mode_t mode, char str[]);
 int num_len(long n);
 int get_terminal_width(void);
+int compare_names(const void *a, const void *b);   // NEW
 
 int main(int argc, char *argv[])
 {
     int opt;
-    int mode = MODE_VERTICAL;    // default display mode
+    int mode = MODE_VERTICAL;
 
-    while ((opt = getopt(argc, argv, "lx")) != -1)   // NEW: "lx"
+    while ((opt = getopt(argc, argv, "lx")) != -1)
     {
         if (opt == 'l')
             mode = MODE_LONG;
@@ -74,7 +74,6 @@ int main(int argc, char *argv[])
     return 0;
 }
 
-/* Read all names into an array, then call the right display function */
 void do_ls(const char *dir, int mode)
 {
     struct dirent *entry;
@@ -128,7 +127,9 @@ void do_ls(const char *dir, int mode)
     }
     closedir(dp);
 
-    // NEW: choose display function based on mode
+    // NEW: sort names alphabetically before displaying
+    qsort(names, count, sizeof(char *), compare_names);
+
     if (mode == MODE_LONG)
         print_long(dir, names, count);
     else if (mode == MODE_HORIZONTAL)
@@ -141,6 +142,15 @@ void do_ls(const char *dir, int mode)
     free(names);
 }
 
+/* NEW: comparison function for qsort (alphabetical order) */
+int compare_names(const void *a, const void *b)
+{
+    // a and b point to elements of the array, and each element is a char *
+    const char *name1 = *(const char **)a;
+    const char *name2 = *(const char **)b;
+    return strcmp(name1, name2);
+}
+
 int get_terminal_width(void)
 {
     struct winsize w;
@@ -149,7 +159,6 @@ int get_terminal_width(void)
     return w.ws_col;
 }
 
-/* Default: "down then across" */
 void print_vertical(char **names, int count, int maxlen)
 {
     if (count == 0)
@@ -177,7 +186,6 @@ void print_vertical(char **names, int count, int maxlen)
     }
 }
 
-/* NEW: -x option, "across" (left to right, then next line) */
 void print_horizontal(char **names, int count, int maxlen)
 {
     if (count == 0)
@@ -185,11 +193,10 @@ void print_horizontal(char **names, int count, int maxlen)
 
     int term_width = get_terminal_width();
     int col_width = maxlen + SPACING;
-    int pos = 0;     // how much of the current line is used
+    int pos = 0;
 
     for (int i = 0; i < count; i++)
     {
-        // next name will not fit: go to a new line
         if (pos + col_width > term_width && pos > 0)
         {
             printf("\n");
@@ -201,7 +208,6 @@ void print_horizontal(char **names, int count, int maxlen)
     printf("\n");
 }
 
-/* CHANGED: -l option, now works on the names array */
 void print_long(const char *dir, char **names, int count)
 {
     struct stat info;
@@ -211,7 +217,6 @@ void print_long(const char *dir, char **names, int count)
     int w_links = 0, w_user = 0, w_group = 0, w_size = 0;
     long total_blocks = 0;
 
-    /* PASS 1: find column widths and total */
     for (int i = 0; i < count; i++)
     {
         snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
@@ -237,7 +242,6 @@ void print_long(const char *dir, char **names, int count)
 
     printf("total %ld\n", total_blocks / 2);
 
-    /* PASS 2: print each file */
     for (int i = 0; i < count; i++)
     {
         snprintf(path, sizeof(path), "%s/%s", dir, names[i]);
@@ -285,7 +289,6 @@ void print_long(const char *dir, char **names, int count)
     }
 }
 
-/* NEW helper: user id -> user name (or number if not found) */
 void get_user_name(uid_t uid, char buf[], int size)
 {
     struct passwd *pw = getpwuid(uid);
@@ -295,7 +298,6 @@ void get_user_name(uid_t uid, char buf[], int size)
         snprintf(buf, size, "%d", uid);
 }
 
-/* NEW helper: group id -> group name (or number if not found) */
 void get_group_name(gid_t gid, char buf[], int size)
 {
     struct group *gr = getgrgid(gid);
